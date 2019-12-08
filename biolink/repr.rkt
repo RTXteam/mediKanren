@@ -4,6 +4,7 @@
   concept-category
   concept-name
   concept-props
+  concept->xrefs
 
   edge/props-subject
   edge/props-pid
@@ -16,6 +17,11 @@
   edge-eid
   edge->bytes
   bytes->edge
+
+  string-key->bytes
+  bytes->string-key
+  write-string-keys
+  port->string-keys
 
   suffix-key->bytes
   bytes->suffix-key
@@ -31,18 +37,32 @@
   offset-write
   offset-count
   offset-ref
+  detail-find-index
   detail-find
   detail-ref
   detail-next
   detail-write
   detail-stream)
 
-(require racket/set racket/stream)
+(require racket/list racket/port racket/set racket/stream racket/string)
 
 (define (concept-cui c)      (vector-ref c 0))
 (define (concept-category c) (vector-ref c 1))
 (define (concept-name c)     (vector-ref c 2))
 (define (concept-props c)    (vector-ref c 3))
+(define (concept->xrefs c)
+  (define props (concept-props c))
+  (define (dedup xs)
+    (cdr (reverse (foldl (lambda (part acc) (if (equal? part (car acc)) acc
+                                              (cons part acc)))
+                         '(#t) xs))))
+  (append* (map (lambda (key)
+                  (define rib (assoc key props))
+                  (if rib (map (lambda (curie)
+                                 (string-join (dedup (string-split curie ":"))
+                                              ":"))
+                               (call-with-input-string (cdr rib) read)) '()))
+                '("xrefs" "same_as" "equivalent_identifiers"))))
 
 ;; This is the edge representation for edges.scm, not for edges-by-X.detail.
 (define (edge/props-subject e) (vector-ref e 0))
@@ -58,22 +78,40 @@
 
 (define (byte-at offset n) (bitwise-and 255 (arithmetic-shift n offset)))
 
-;; 1-byte predicate + 1-byte category + 3-byte concept-id + 4-byte eid
-(define edge-byte-size (+ 1 1 3 4))
+;; 2-byte predicate + 2-byte category + 3-byte concept-id + 4-byte eid
+(define edge-byte-size (+ 2 2 3 4))
 (define (edge->bytes e)
-  (define c (edge-dst e))
+  (define c   (edge-dst e))
   (define pid (edge-predicate e))
-  (define cc (edge-dst-category e))
+  (define cc  (edge-dst-category e))
   (define eid (edge-eid e))
-  (bytes pid cc (byte-at -16 c) (byte-at -8 c) (byte-at 0 c)
+  (bytes                                     (byte-at -8 pid) (byte-at 0 pid)
+                                             (byte-at -8 cc)  (byte-at 0 cc)
+                           (byte-at -16 c)   (byte-at -8 c)   (byte-at 0 c)
          (byte-at -24 eid) (byte-at -16 eid) (byte-at -8 eid) (byte-at 0 eid)))
 (define (bytes->edge bs)
   (define (bref pos) (bytes-ref bs pos))
   (define (bref-to pos offset) (arithmetic-shift (bref pos) offset))
-  (vector (bref 0) (bref 1)
-          (+ (bref-to 2 16) (bref-to 3 8) (bref-to 4 0))
-          (+ (bref-to 5 24) (bref-to 6 16) (bref-to 7 8) (bref-to 8 0))))
+  (vector (+                               (bref-to 0 8) (bref-to 1  0))
+          (+                               (bref-to 2 8) (bref-to 3  0))
+          (+                (bref-to 4 16) (bref-to 5 8) (bref-to 6  0))
+          (+ (bref-to 7 24) (bref-to 8 16) (bref-to 9 8) (bref-to 10 0))))
 (define (read-edge-bytes in) (read-bytes edge-byte-size in))
+
+(define string-key-byte-size 4)
+(define (string-key->bytes cid)
+  (bytes (byte-at -24 cid) (byte-at -16 cid) (byte-at -8 cid) (byte-at 0 cid)))
+(define (bytes->string-key bs)
+  (define (bref-to pos offset) (arithmetic-shift (bytes-ref bs pos) offset))
+  (+ (bref-to 0 24) (bref-to 1 16) (bref-to 2 8) (bref-to 3 0)))
+(define (read-string-key-bytes in) (read-bytes string-key-byte-size in))
+(define (write-string-keys out v)
+  (for ((s (in-vector v))) (write-bytes (string-key->bytes s) out)))
+(define (port->string-keys in)
+  (define end (begin (file-position in eof) (file-position in)))
+  (file-position in 0)
+  (for/vector ((_ (in-range (/ end string-key-byte-size))))
+              (bytes->string-key (read-string-key-bytes in))))
 
 (define suffix-key-byte-size (+ 4 2))
 (define (suffix-key->bytes s)
@@ -164,6 +202,17 @@
   (file-position detail-in (offset-ref offset-in n))
   (read detail-in))
 (define (detail-next detail-in) (read detail-in))
+
+(define (detail-find-index detail-in offset-in compare)
+  (let loop ((start 0) (end (offset-count offset-in)) (best #f))
+    (cond ((< start end)
+           (define n (+ start (quotient (- end start) 2)))
+           (define detail (detail-ref detail-in offset-in n))
+           (case (compare detail)
+             ((-1) (loop (+ 1 n) end best))
+             (( 0) (loop start n n))
+             (( 1) (loop start n best))))
+          (else best))))
 
 (define (detail-find detail-in offset-in compare)
   (let loop ((start 0) (end (offset-count offset-in)) (best #f))

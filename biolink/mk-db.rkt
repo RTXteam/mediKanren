@@ -11,11 +11,13 @@
   db:subject-predicateo
   db:object-predicateo
 
+  db:~cui*-concepto
   db:~cui-concepto
   db:~name-concepto
   db:~predicateo
   db:~categoryo
   db:~name*-concepto/options
+  db:xref-concepto
 
   chars:ignore-typical
   chars:split-typical
@@ -45,6 +47,10 @@
           ((== `(,(car i&v) . ,(cdr i&v)) iv))
           ((loop (stream-rest i&v*))))))))
 
+(define (db:~cui*-concepto db ~cui* concept)
+  (project (~cui*)
+    (stream-refo
+      (stream-map (i&v->i&d db) (db:~cui*->cid&concept* db ~cui*)) concept)))
 (define (db:~cui-concepto db ~cui concept)
   (project (~cui)
     (stream-refo
@@ -67,6 +73,27 @@
 (define (db:~categoryo db ~category category)
   (project (~category)
     (stream-refo (db:~category->catid&category* db ~category) category)))
+
+(define (db:xref-concepto db xref concept)
+  (project (xref concept)
+    (match concept
+      (`(,(and cid (? integer?)) . ,_)
+        (fresh ()
+          (db:concepto db concept)
+          (let loop ((xref* (concept->xrefs (db:cid->concept db cid))))
+            (if (null? xref*) fail
+              (conde ((== (car xref*) xref))
+                     ((loop (cdr xref*))))))))
+      (_ (cond ((not (var? xref))
+                (let loop ((cid* (db:xref->cid* db xref)))
+                  (if (null? cid*) fail
+                    (let ((c (vconcept->details
+                               db (db:cid->concept db (car cid*)))))
+                      (conde ((== (cons (car cid*) c) concept))
+                             ((loop (cdr cid*))))))))
+               (else (fresh ()
+                       (db:concepto db concept)
+                       (db:xref-concepto db xref concept))))))))
 
 (define (vector-refo e->v v* iv)
   (when (not (vector? v*)) (error "vector-refo vector must be ground:" v* iv))

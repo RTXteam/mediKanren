@@ -18,12 +18,14 @@
   db:object->edge-stream
   db:pmid->eid*
   db:pmid&eid*-stream
+  db:xref->cid*
 
   db:~category->catid&category*
   db:~predicate->pid&predicate*
-  db:~name->cid&concept*
+  db:~cui*->cid&concept*
   db:~cui->cid&concept*
   db:~name*->cid&concept*/options
+  db:~name->cid&concept*
 
   chars:ignore-typical
   chars:split-typical
@@ -39,6 +41,10 @@
   racket/vector)
 
 (define fnin-concepts             "concepts.scm")
+(define fnin-xrefs                "xrefs.scm")
+(define fnin-concepts-by-xref     "concepts-by-xref.scm")
+(define fnin-concept-cui-corpus   "concept-cui-corpus.scm")
+(define fnin-concept-cui-index    "concept-cui-index.bytes")
 (define fnin-concept-name-corpus  "concept-name-corpus.scm")
 (define fnin-concept-name-index   "concept-name-index.bytes")
 (define fnin-categories           "categories.scm")
@@ -76,11 +82,17 @@
         (if (file-exists? "/dev/null")
             (open-input-file "/dev/null")
             (open-input-file "nul"))))
-  (define in-concepts-by-category
-    (open-db-path fnin-concepts-by-category))
+  (define in-concepts-by-category (open-db-path fnin-concepts-by-category))
   (define in-offset-concepts-by-category
     (open-db-path (fname-offset fnin-concepts-by-category)))
+  (define in-concepts-by-xref (open-db-path fnin-concepts-by-xref))
+  (define in-offset-concepts-by-xref
+    (open-db-path (fname-offset fnin-concepts-by-xref)))
   (define in-concepts            (open-db-path fnin-concepts))
+  (define in-xrefs               (open-db-path fnin-xrefs))
+  (define in-offset-xrefs        (open-db-path (fname-offset fnin-xrefs)))
+  (define in-concept-cui-corpus  (open-db-path fnin-concept-cui-corpus))
+  (define in-concept-cui-index   (open-db-path fnin-concept-cui-index))
   (define in-concept-name-corpus (open-db-path fnin-concept-name-corpus))
   (define in-concept-name-index  (open-db-path fnin-concept-name-index))
   (define in-offset-concepts  (open-db-path (fname-offset fnin-concepts)))
@@ -101,6 +113,10 @@
   (define predicate*
     (list->vector (read-all-from-file (db-path fnin-predicates))))
 
+  (define cui-corpus
+    (list->vector (stream->list (stream-map cdr (port->stream-offset&values
+                                                  in-concept-cui-corpus)))))
+  (define cui-index (port->string-keys in-concept-cui-index))
   (define name-corpus
     (list->vector (stream->list (stream-map cdr (port->stream-offset&values
                                                   in-concept-name-corpus)))))
@@ -111,6 +127,15 @@
        (define cid* (detail-ref in-concepts-by-category
                                 in-offset-concepts-by-category catid))
        (vector-set! catid=>cid* catid cid*))
+
+  (define (xref->cid* xref)
+    (define xid (detail-find-index in-xrefs in-offset-xrefs
+                                   (lambda (key)
+                                     (cond ((string<? key xref) -1)
+                                           ((string=? key xref)  0)
+                                           (else                 1)))))
+    (if xid (detail-ref in-concepts-by-xref in-offset-concepts-by-xref xid)
+      '()))
 
   (define (catid->cid* catid)  (vector-ref catid=>cid* catid))
   (define (cid->concept cid)   (detail-ref in-concepts in-offset-concepts cid))
@@ -139,27 +164,33 @@
     (if (eof-object? pmid&eid*) '() (cdr pmid&eid*)))
   (define (pmid&eid*-stream) (detail-stream in-pubmed-edges))
 
-  (vector category* predicate* (cons name-corpus name-index)
+  (vector category* predicate*
+          (cons cui-corpus cui-index)
+          (cons name-corpus name-index)
           catid->cid* cid->concept eid->edge
           cid&concept-stream eid&edge/props-stream
           subject->edge-stream object->edge-stream
-          pmid->eid* pmid&eid*-stream subject->pids object->pids))
+          pmid->eid* pmid&eid*-stream subject->pids object->pids
+          xref->cid*))
 
 (define (db:category*             db)        (vector-ref db 0))
 (define (db:predicate*            db)        (vector-ref db 1))
-(define (db:concept-name-corpus   db)        (car (vector-ref db 2)))
-(define (db:concept-name-index    db)        (cdr (vector-ref db 2)))
-(define (db:catid->cid*           db . args) (apply (vector-ref db 3) args))
-(define (db:cid->concept          db . args) (apply (vector-ref db 4) args))
-(define (db:eid->edge             db . args) (apply (vector-ref db 5) args))
-(define (db:cid&concept-stream    db)        ((vector-ref db 6)))
-(define (db:eid&edge/props-stream db)        ((vector-ref db 7)))
-(define (db:subject->edge-stream  db . args) (apply (vector-ref db 8) args))
-(define (db:object->edge-stream   db . args) (apply (vector-ref db 9) args))
-(define (db:pmid->eid*            db . args) (apply (vector-ref db 10) args))
-(define (db:pmid&eid*-stream      db)        ((vector-ref db 11)))
-(define (db:subject->pids         db . args) (apply (vector-ref db 12) args))
-(define (db:object->pids          db . args) (apply (vector-ref db 13) args))
+(define (db:concept-cui-corpus    db)        (car (vector-ref db 2)))
+(define (db:concept-cui-index     db)        (cdr (vector-ref db 2)))
+(define (db:concept-name-corpus   db)        (car (vector-ref db 3)))
+(define (db:concept-name-index    db)        (cdr (vector-ref db 3)))
+(define (db:catid->cid*           db . args) (apply (vector-ref db 4) args))
+(define (db:cid->concept          db . args) (apply (vector-ref db 5) args))
+(define (db:eid->edge             db . args) (apply (vector-ref db 6) args))
+(define (db:cid&concept-stream    db)        ((vector-ref db 7)))
+(define (db:eid&edge/props-stream db)        ((vector-ref db 8)))
+(define (db:subject->edge-stream  db . args) (apply (vector-ref db 9) args))
+(define (db:object->edge-stream   db . args) (apply (vector-ref db 10) args))
+(define (db:pmid->eid*            db . args) (apply (vector-ref db 11) args))
+(define (db:pmid&eid*-stream      db)        ((vector-ref db 12)))
+(define (db:subject->pids         db . args) (apply (vector-ref db 13) args))
+(define (db:object->pids          db . args) (apply (vector-ref db 14) args))
+(define (db:xref->cid*            db . args) (apply (vector-ref db 15) args))
 
 (define (db:catid->category db catid) (vector-ref (db:category* db) catid))
 (define (db:pid->predicate db pid)    (vector-ref (db:predicate* db) pid))
@@ -209,16 +240,23 @@
   (simple~string->offset&value*
     (vector->stream-offset&values (db:predicate* db))
     ~predicate (lambda (v) v)))
-(define (db:~name->cid&concept* db ~name)
-  (simple~string->offset&value* (db:cid&concept-stream db) ~name concept-name))
+
+(define (db:~cui*->cid&concept* db ~cui*)
+  (define cids (string:corpus-find* (db:concept-cui-corpus db)
+                                    (db:concept-cui-index db) ~cui*))
+  (foldr (lambda (i cs) (stream-cons (cons i (db:cid->concept db i)) cs))
+         '() cids))
 (define (db:~cui->cid&concept* db ~cui)
-  (simple~string->offset&value* (db:cid&concept-stream db) ~cui concept-cui))
+  (db:~cui*->cid&concept* db (list ~cui)))
+
 (define (db:~name*->cid&concept*/options
           case-sensitive? chars:ignore chars:split db ~name*)
-  (define cids (corpus-find* (db:concept-name-corpus db)
-                             (db:concept-name-index db) ~name*))
+  (define cids (suffix:corpus-find* (db:concept-name-corpus db)
+                                    (db:concept-name-index db) ~name*))
   (define found (foldr (lambda (i cs)
                          (stream-cons (cons i (db:cid->concept db i)) cs))
                        '() cids))
   (~string*->offset&value* case-sensitive? chars:ignore chars:split
                            found ~name* concept-name))
+(define (db:~name->cid&concept* db ~name)
+  (simple~string->offset&value* (db:cid&concept-stream db) ~name concept-name))

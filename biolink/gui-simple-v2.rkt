@@ -10,14 +10,13 @@
   racket/string
   net/sendurl
   "db.rkt"
-  "mk-db.rkt"
   (except-in racket/match ==)
   (only-in srfi/1 iota))
 
 (provide
   launch-gui)
 
-(define MEDIKANREN_VERSION_STRING "mediKanren Explorer 0.2.28")
+(define MEDIKANREN_VERSION_STRING "mediKanren Explorer 0.2.29")
 
 (define argv (current-command-line-arguments))
 (define argv-optional '#(CONFIG_FILE))
@@ -568,7 +567,7 @@ edge format, with dbname at front (as used in edgeo):
            (name-parts (split-name-string current-name))
            (ans (if (null? name-parts) '()
                   (begin (printf "searching for: ~s\n" current-name)
-                         (time (find-concepts subject? object? isa-count #f name-parts))))))
+                         (time (find-concepts/options subject? object? isa-count #f name-parts))))))
       (set-box! choices ans)
       (send concept-listbox
             set

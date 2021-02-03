@@ -6,6 +6,7 @@
   string:corpus->index
   string:corpus-find*)
 (require
+  "repr.rkt"
   racket/list
   racket/string
   racket/unsafe/ops
@@ -88,14 +89,15 @@
   out)
 
 (define (nlist-intersection nlists)
-  (let loop ((i** (map (lambda (nlist) (sort nlist <)) nlists)))
-    (cond ((ormap null? i**) '())
-          (else (define i0* (map car i**))
-                (define next (apply max i0*))
-                (if (andmap (lambda (i) (= i next)) i0*)
-                  (cons next (loop (map cdr i**)))
-                  (loop (map (lambda (i*) (dropf i* (lambda (i) (< i next))))
-                             i**)))))))
+  (if (null? nlists) '()
+    (let loop ((i** nlists))
+      (cond ((ormap null? i**) '())
+            (else (define i0* (map car i**))
+                  (define next (apply max i0*))
+                  (if (andmap (lambda (i) (= i next)) i0*)
+                    (cons next (loop (map cdr i**)))
+                    (loop (map (lambda (i*) (dropf i* (lambda (i) (< i next))))
+                               i**))))))))
 
 (define i0              (char->integer #\0))
 (define i9              (char->integer #\9))
@@ -135,15 +137,15 @@
   (define (suffix-ref s i)  (suffix-string-ref corpus s i))
   (msd-radix-sort suffixes suffix-length suffix-ref suffix<?))
 
-(define (suffix:corpus-find corpus index str)
+(define (suffix:corpus-find-range corpus index str)
   (define needle (string/searchable str))
   (define (compare si needle)
-    (define hay (suffix->string corpus (vector-ref index si)))
+    (define hay (suffix->string corpus (suffix-key-ref index si)))
     (cond ((string-prefix? hay needle) 0)
           ((string<? hay needle)      -1)
           (else                        1)))
   ;; Find a point in the desired range...
-  (let find-range ((start 0) (end (vector-length index)))
+  (let find-range ((start 0) (end (suffix-key-count index)))
     (cond ((< start end)
            (define mid (+ start (quotient (- end start) 2)))
            (case (compare mid needle)
@@ -168,13 +170,28 @@
                            ((0) (loop (+ 1 mid) end))
                            (else (error "rend: this shouldn't happen."))))
                         (else end))))
-              (remove-duplicates (map (lambda (i) (car (vector-ref index i)))
-                                      (range rstart rend))))))
-          (else '()))))
+              (cons rstart rend))))
+          (else (cons start end)))))
+
+(define (remove-adjacent-duplicates xs)
+  (define (remove/x x xs)
+    (cons x (let loop ((xs xs))
+              (cond ((null? xs)              '())
+                    ((equal? (car xs) x)     (loop (cdr xs)))
+                    (else (remove/x (car xs) (cdr xs)))))))
+  (if (null? xs) '() (remove/x (car xs) (cdr xs))))
+
+(define (dedup/< ns) (remove-adjacent-duplicates (sort ns <)))
 
 (define (suffix:corpus-find* corpus index str*)
+  (define (rz r) (- (cdr r) (car r)))
+  (define rs (map (lambda (s) (suffix:corpus-find-range corpus index s)) str*))
+  (define zmin (* 2 (if (null? rs) 0 (foldl (lambda (r z) (min z (rz r)))
+                                            (rz (car rs)) (cdr rs)))))
   (nlist-intersection
-    (map (lambda (s) (suffix:corpus-find corpus index s)) str*)))
+    (map (lambda (r) (dedup/< (map (lambda (i) (car (suffix-key-ref index i)))
+                                   (range (car r) (cdr r)))))
+         (filter (lambda (r) (<= (rz r) zmin)) rs))))
 
 (define (string:corpus->index corpus)
   (define ixs (range (vector-length corpus)))

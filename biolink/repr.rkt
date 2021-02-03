@@ -4,6 +4,7 @@
   concept-category
   concept-name
   concept-props
+  concept->synonyms
   concept->xrefs
 
   edge/props-subject
@@ -23,10 +24,10 @@
   write-string-keys
   port->string-keys
 
+  suffix-key-count
+  suffix-key-ref
   suffix-key->bytes
-  bytes->suffix-key
   write-suffix-keys
-  port->suffix-keys
 
   edge-pids-by-X
   stream-edges-by-X
@@ -46,10 +47,29 @@
 
 (require racket/list racket/port racket/set racket/stream racket/string)
 
+(define (read-list/string s)
+  (cond ((string-prefix? s "(")
+         (define datum (call-with-input-string s read))
+         (if (list? datum) datum '()))
+        (else (list s))))
+
 (define (concept-cui c)      (vector-ref c 0))
 (define (concept-category c) (vector-ref c 1))
 (define (concept-name c)     (vector-ref c 2))
 (define (concept-props c)    (vector-ref c 3))
+(define (concept->synonyms c)
+  (define props (concept-props c))
+  (define (dedup xs)
+    (cdr (reverse (foldl (lambda (part acc) (if (equal? part (car acc)) acc
+                                              (cons part acc)))
+                         '(#t) xs))))
+  (append* (map (lambda (key)
+                  (define rib (assoc key props))
+                  (if rib (map (lambda (curie)
+                                 (string-join (dedup (string-split curie ":"))
+                                              ":"))
+                               (read-list/string (cdr rib))) '()))
+                '("same_as" "equivalent_identifiers"))))
 (define (concept->xrefs c)
   (define props (concept-props c))
   (define (dedup xs)
@@ -61,8 +81,8 @@
                   (if rib (map (lambda (curie)
                                  (string-join (dedup (string-split curie ":"))
                                               ":"))
-                               (call-with-input-string (cdr rib) read)) '()))
-                '("xrefs" "same_as" "equivalent_identifiers"))))
+                               (read-list/string (cdr rib))) '()))
+                '("xrefs"))))
 
 ;; This is the edge representation for edges.scm, not for edges-by-X.detail.
 (define (edge/props-subject e) (vector-ref e 0))
@@ -114,23 +134,21 @@
               (bytes->string-key (read-string-key-bytes in))))
 
 (define suffix-key-byte-size (+ 4 2))
+(define (suffix-key-count bs) (/ (bytes-length bs) suffix-key-byte-size))
+(define (suffix-key-ref index i) (bytes->suffix-key index i))
 (define (suffix-key->bytes s)
   (define cid (car s))
   (define pos (cdr s))
   (bytes (byte-at -24 cid) (byte-at -16 cid) (byte-at -8 cid) (byte-at 0 cid)
          (byte-at -8 pos) (byte-at 0 pos)))
-(define (bytes->suffix-key bs)
-  (define (bref-to pos offset) (arithmetic-shift (bytes-ref bs pos) offset))
+(define (bytes->suffix-key bs start)
+  (define i (* start suffix-key-byte-size))
+  (define (bref-to j offset) (arithmetic-shift (bytes-ref bs (+ i j)) offset))
   (cons (+ (bref-to 0 24) (bref-to 1 16) (bref-to 2 8) (bref-to 3 0))
         (+ (bref-to 4 8) (bref-to 5 0))))
 (define (read-suffix-key-bytes in) (read-bytes suffix-key-byte-size in))
 (define (write-suffix-keys out v)
   (for ((s (in-vector v))) (write-bytes (suffix-key->bytes s) out)))
-(define (port->suffix-keys in)
-  (define end (begin (file-position in eof) (file-position in)))
-  (file-position in 0)
-  (for/vector ((_ (in-range (/ end suffix-key-byte-size))))
-              (bytes->suffix-key (read-suffix-key-bytes in))))
 
 (define (edge-pids-by-X in in-offset src)
   (define start (offset-ref in-offset src))

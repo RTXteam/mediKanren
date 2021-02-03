@@ -1,23 +1,42 @@
 #lang racket/base
 (provide
   (all-from-out "mk.rkt")
+  find-concepts/name
   find-concepts
   find-isa-concepts
   find-concepts/options
+  find-concepts/options/cui-infer
   find-predicates/concepts
   find-predicates
+  find-exact-predicates
   find-categories
+  find-exact-categories
   find-Xs
   find-graph
   run/graph
 
   membero
 
+  concept->dbname
+  concept->cid
+  concept->curie
+  concept->name
+  concept->category
+  concept->props
+
+  edge->dbname
+  edge->eid
+  edge->subject
+  edge->object
+  edge->pred
+  edge->props
+
   ~name*-concepto
   ~cui*-concepto
   ~cui-concepto
   ~categoryo
   ~predicateo
+  synonym-concepto
   xref-concepto
   category-concepto
   concepto
@@ -33,6 +52,12 @@
   pubmed-ids-from-edge
   pubmed-URLs-from-edge
   pubmed-count
+
+  PUBMED_URL_PREFIX
+
+  publications-info-alist-from-edge
+  publications-info-alist-from-edge-props
+
   path-confidence
   path-confidence<?
   sort-paths
@@ -55,20 +80,26 @@
   path/data
   path:data
   path/root
-  path:root)
+  path:root
+
+  python->json
+
+  write-list-to-tsv)
 
 (require
   "db.rkt"
   "mk.rkt"
   "mk-db.rkt"
   "repr.rkt"
+  json
   racket/format
   racket/list
   (except-in racket/match ==)
   racket/runtime-path
   racket/port
   racket/set
-  racket/stream)
+  racket/stream
+  racket/string)
 
 (define (keep n xs)
   (if (or (and n (= n 0)) (null? xs)) '()
@@ -153,6 +184,24 @@
 #|
 concept = `(,dbname ,cid ,cui ,name (,catid . ,cat) ,props)
 |#
+(define (concept->dbname concept) (car concept))
+(define (concept->cid concept) (cadr concept))
+(define (concept->curie concept) (caddr concept))
+(define (concept->name concept) (cadddr concept))
+(define (concept->category concept) (cadddr (cdr concept)))
+(define (concept->props concept) (cadddr (cddr concept)))
+
+#|
+edge = `(,dbname ,eid ,subject-concept ,object-concept (,pid . ,pred-name) ,props)
+|#
+(define (edge->dbname edge) (car edge))
+(define (edge->eid edge) (cadr edge))
+(define (edge->subject edge) (cons (edge->dbname edge) (caddr edge)))
+(define (edge->object edge) (cons (edge->dbname edge) (cadddr edge)))
+(define (edge->pred edge) (cadddr (cdr edge)))
+(define (edge->props edge) (cadddr (cddr edge)))
+
+
 (define (~name*-concepto ~name* concept)
   (conde/databases
     (lambda (dbname db)
@@ -173,6 +222,11 @@ concept = `(,dbname ,cid ,cui ,name (,catid . ,cat) ,props)
     (lambda (dbname db)
       (fresh (c) (== `(,dbname . ,c) concept)
         (db:~cui-concepto db ~cui c)))))
+(define (synonym-concepto synonym concept)
+  (conde/databases
+    (lambda (dbname db)
+      (fresh (c) (== `(,dbname . ,c) concept)
+        (db:synonym-concepto db synonym c)))))
 (define (xref-concepto xref concept)
   (conde/databases
     (lambda (dbname db)
@@ -281,6 +335,67 @@ edge = `(,dbname ,eid (,scid ,scui ,sname (,scatid . ,scat) ,sprops)
 (define (pubmed-count e)
   (length (pubmed-ids-from-edge e)))
 
+(define (python->json py)
+  (define len (string-length py))
+  (let loop ((i 0) (start 0))
+    (cond ((= i len) (if (= start 0) py (substring py start)))
+          ((eqv? (string-ref py i) #\')
+           (string-append
+             (substring py start i) "\""
+             (let requote ((i (+ i 1)) (start (+ i 1)))
+               (cond ((eqv? (string-ref py i) #\')
+                      (string-append (substring py start i) "\""
+                                     (loop (+ i 1) (+ i 1))))
+                     ((eqv? (string-ref py i) #\\)
+                      (if (eqv? (string-ref py (+ i 1)) #\")
+                        (requote (+ i 2) start)
+                        (string-append (substring py start i)
+                                       (requote (+ i 2) (+ i 1)))))
+                     ((eqv? (string-ref py i) #\")
+                      (string-append (substring py start i) "\\\""
+                                     (requote (+ i 1) (+ i 1))))
+                     (else (requote (+ i 1) start))))))
+          ((eqv? (string-ref py i) #\")
+           (let skip ((i (+ i 1)) (start start))
+             (cond ((eqv? (string-ref py i) #\") (loop (+ i 1) start))
+                   ((eqv? (string-ref py i) #\\)
+                    (if (eqv? (string-ref py (+ i 1)) #\")
+                      (skip (+ i 2) start)
+                      (string-append (substring py start i)
+                                     (skip (+ i 2) (+ i 1)))))
+                   (else                         (skip (+ i 1) start)))))
+          (else (loop (+ i 1) start)))))
+
+(define (publications-info-alist-from-edge-props eprops)
+  (cond
+    [(assoc "publications_info" eprops) ;; RTX2
+     => (lambda (pr)
+          (with-handlers ([exn:fail?
+                           (lambda (v)
+                             ((error-display-handler) (exn-message v) v)
+                             '())])
+            (define pubs (cdr pr))
+            (define jason-ht (string->jsexpr (python->json pubs)))
+            (hash-map jason-ht (lambda (k v)
+                                 (cons (string-append
+                                        PUBMED_URL_PREFIX
+                                        (car (regexp-match* #rx"([0-9]+)" (symbol->string k) #:match-select cadr)))
+                                       (list (hash-ref v '|publication date| #f)
+                                             (hash-ref v '|subject score| #f)
+                                             (hash-ref v '|object score| #f)
+                                             (regexp-replace*
+                                              #rx"([ ]+)"
+                                              (hash-ref v 'sentence #f)
+                                              " ")))))))]
+    [else '()]))
+(define (publications-info-alist-from-edge edge)
+  ;; ((pubmed-URL . (publication-date subject-score object-score sentence)) ...)
+  (remove-duplicates
+    (match edge
+      ['path-separator '()]
+      [`(,dbname ,eid ,subj ,obj ,p ,eprops)
+        (publications-info-alist-from-edge-props eprops)])))
+
 (define (get-pred-names e*)
   (let loop ([e* e*]
              [pred-names '()])
@@ -332,21 +447,18 @@ edge = `(,dbname ,eid (,scid ,scui ,sname (,scatid . ,scat) ,sprops)
                          (membero o/db concepts)
                          (isao s/db o/db)))))
 
-(define (find-concepts/options subject? object? isa-count via-cui? strings)
+(define (concepts/options subject? object? isa-count concepts)
   ;; subject? and object? insist that a concept participate in a certain role.
   ;; If via-cui? then strings is an OR-list of CUIs to consider.
   ;; Otherwise, strings is an AND-list of fragments the name must contain.
-  (let* ((ans (if via-cui?
-                (run* (c) (~cui*-concepto strings c))
-                (run* (c) (~name*-concepto strings c))))
-         (isa-ans (find-isa-concepts isa-count ans))
-         (ans (if (null? isa-ans) ans
-                (remove-duplicates (append ans isa-ans))))
+  (let* ((isa-concepts (find-isa-concepts isa-count concepts))
+         (ans (if (null? isa-concepts) (remove-duplicates concepts)
+                (remove-duplicates (append concepts isa-concepts))))
          (ans (filter  ;; Only include concepts with at least one predicate.
                 (lambda (concept)
                   (define (? cpo) (not (null? (run 1 (p) (cpo concept p)))))
                   (and (or (not subject?) (? subject-predicateo))
-                       (or (not object?) (? object-predicateo))))
+                       (or (not object?)  (? object-predicateo))))
                 ans)))
     (sort ans (lambda (a1 a2)
                 (let ((dbname1 (symbol->string (car a1)))
@@ -357,8 +469,26 @@ edge = `(,dbname ,eid (,scid ,scui ,sname (,scatid . ,scat) ,sprops)
                       (and (string=? dbname1 dbname2)
                            (string<? cui1 cui2))))))))
 
+(define (find-concepts/options/cui-infer subject? object? isa-count strings)
+  (define yes-cui
+    (map (lambda (s) (run* (c) (~cui*-concepto (list s) c))) strings))
+  (define no-cui (filter-not not (map (lambda (s rs) (and (null? rs) s))
+                                      strings yes-cui)))
+  (define all (append* (cons (run* (c) (~name*-concepto no-cui c)) yes-cui)))
+  (concepts/options subject? object? isa-count all))
+
+(define (find-concepts/options subject? object? isa-count via-cui? strings)
+  (concepts/options subject? object? isa-count
+                    (if via-cui?
+                      (run* (c) (~cui*-concepto strings c))
+                      (run* (c) (~name*-concepto strings c)))))
+
 (define (find-concepts via-cui? strings)
   (find-concepts/options #f #f 0 via-cui? strings))
+
+(define (find-concepts/name name)
+  (filter (lambda (c) (string=? (cadddr c) name))
+          (find-concepts #f (list name))))
 
 (define (find-predicates/concepts subject? object? concepts)
   (map (lambda (c)
@@ -368,11 +498,20 @@ edge = `(,dbname ,eid (,scid ,scui ,sname (,scatid . ,scat) ,sprops)
            (and object? (run* (p) (object-predicateo c p))))
          (list c subject-predicates object-predicates))
        concepts))
-
 (define (find-predicates names)
   (append* (map (lambda (name) (run* (x) (~predicateo name x))) names)))
+(define (find-exact-predicates names)
+  (run* (p) (fresh (db pid name)
+                (membero name names)
+                (== p `(,db ,pid . ,name))
+                (predicateo p))))
 (define (find-categories names)
   (append* (map (lambda (name) (run* (x) (~categoryo name x))) names)))
+(define (find-exact-categories names)
+  (run* (cat) (fresh (db catid name)
+                (membero name names)
+                (== cat `(,db ,catid . ,name))
+                (categoryo cat))))
 
 (define (find-Xs subjects? objects?)
   ;; subjects?: #f | ((concept (predicate ...) #f) ...)
@@ -456,7 +595,7 @@ edge = `(,dbname ,eid (,scid ,scui ,sname (,scatid . ,scat) ,sprops)
               (let ((min1 (?min (concept->cx s1) (concept->cx o1)))
                     (min2 (?min (concept->cx s2) (concept->cx o2))))
                 (or (?< min1 min2)
-                    (and (not ?< min2 min1)
+                    (and (not (?< min2 min1))
                          (let ((pcx1 (predicate->cx p1))
                                (pcx2 (predicate->cx p2)))
                            (?< (and pcx1 (set-count pcx1))
@@ -676,3 +815,34 @@ edge = `(,dbname ,eid (,scid ,scui ,sname (,scatid . ,scat) ,sprops)
                      (find-graph concept=>set concept=>cx predicate=>cx edges))
        (list (report report-concept concept-sets)
              (report report-edge    edge=>set))))))
+
+
+#|
+example usage, where 'results' is bound to a list of lists:
+
+(write-list-to-tsv
+  (list "db" "subject" "predicate" "object")
+  results
+  "my-tsv.tsv")
+|#
+(define write-list-to-tsv
+  (lambda (header-ls lol path)
+    (with-output-to-file path
+      ;; thunk -- procedure that takes no arguments
+      (lambda ()
+        (for-each
+          (lambda (l)
+            (let loop ([l l])
+              (cond
+                ((null? l)
+                 (error 'output-to-tsv "where's the data!?"))
+                ((null? (cdr l)) ;; l contains exactly 1 element
+                 (display (car l))
+                 (display #\newline))
+                (else
+                 (display (car l))
+                 (display #\tab)
+                 (loop (cdr l))))))
+          (cons header-ls lol)))
+      #:mode 'text
+      #:exists 'replace)))

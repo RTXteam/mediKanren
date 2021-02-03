@@ -15,18 +15,23 @@
 
 ## Ingesting new data sources
 
-### Downloading neo4j data in CSV format
+### Downloading neo4j data in TSV format
 
 * Obtain username, password, host, and port of the neo4j instance.
 * `cd` to the kgx repo.
 * Modify `config.yml` to use the instance information you obtained.  Set the `outputname` here to describe your data source, e.g., `robokop`.
 * Run the download script via `python3`, likely with this command: `python3 neo4j_download.py` (For a typical data source, the download may take an hour or so.)
 
-### Converting CSVs to mediKanren format
+### Converting TSVs (or CSVs) to mediKanren format
 
 * `cd` to the `biolink` subdirectory of the `mediKanren` repo (which is this repo).
-* Move or copy the downloaded CSV files to an appropriately-named subdirectory of the `biolink/data` directory.  We'll assume your datasource is named `NAME`, and will live at `biolink/data/NAME`.
-* Perform conversion by running: (For a typical data source, conversion may take an hour or so.)
+* Move or copy the downloaded TSV (or CSV) files to an appropriately-named subdirectory of the `biolink/data` directory.  We'll assume your datasource is named `NAME`, and will live at `biolink/data/NAME`.
+* For TSV files, perform conversion by running: (For a typical data source, conversion may take an hour or so.)
+```
+racket tsv-graph-to-db.rkt data NAME
+racket build-string-index.rkt data NAME
+```
+* For CSV files, perform conversion by running: (For a typical data source, conversion may take an hour or so.)
 ```
 racket csv-graph-to-db.rkt data NAME
 racket build-string-index.rkt data NAME
@@ -46,17 +51,17 @@ Within racket, running this should produce sensible results:
 (run 10 (e) (db:edgeo NAME e)))
 ```
 
-### Back up CSV source data
+### Back up TSV (or CSV) source data
 
-If CSVs are downloaded from a remote source, then after the CSVs are grouped in a directory, yet before running racket conversion scripts, first create a zip for backup:
+If TSVs are downloaded from a remote source, then after the TSVs are grouped in a directory, yet before running racket conversion scripts, first create a zip for backup:
 ```
 cd data
-zip -r semmed.csv.zip semmed
+zip -r semmed.tsv.zip semmed
 ```
 
 This isn't necessary for neo4j dumps because the dump is a reliable source (though doing so could still save the self-download time).  Remote sources are not reliable.
 
-To backup the CSV->mediKanren work:
+To backup the TSV->mediKanren work:
 ```
 cd data
 zip -r robokop.db.zip robokop
@@ -70,7 +75,7 @@ Follow these instructions to set up a local instance using the dump file.  Then 
 
 ### Start a local neo4j instance from a dump file
 
-Assuming `neo4j` is already stopped, convert a Robokop (or RTX) `X.dump` to CSV format via:
+Assuming `neo4j` is already stopped, convert a Robokop (or RTX) `X.dump` to TSV format via:
 
 ```
 neo4j-admin load --from X.dump --database graph.db --force  # If this is your first time, remove the --force option.
@@ -81,7 +86,7 @@ time python3 neo4j_download.py
 neo4j stop
 ```
 
-Then follow the instructions for converting the CSVs to mediKanren format.
+Then follow the instructions for converting the TSVs to mediKanren format.
 
 (If you've just set neo4j up for the first time and kgx failed due to authorization, try visiting localhost:7474 in the browser, and logging in with username=neo4j password=neo4j.  You'll be prompted to set a new password.  Set it to be consistent with the password in your kgx config file.)
 
@@ -108,55 +113,90 @@ neo4j stop
 
 ## TODO
 
-* finish implementing 0.9.1 (looks like it might be 0.9.2 now?) draft specification of NCATS Translator Reasoner API
-  * https://github.com/NCATS-Tangerine/NCATS-ReasonerStdAPI/tree/master/API
-  * OpenAPI 3.0.1 format
-    * https://github.com/OAI/OpenAPI-Specification/blob/master/versions/3.0.1.md
-    * What is OpenAPI? https://swagger.io/docs/specification/about/
-    * https://developer.squareup.com/blog/making-openapi-swagger-bearable-with-your-own-dsl/
-  * communicate using JSON-LD format: https://json-ld.org/
-  * yaml/json parser/unparser
-    * https://docs.racket-lang.org/yaml/index.html
-    * https://github.com/esilkensen/yaml
-  * schema validation and exploration
+### High-level
 
+* queries we want to show during demo, common use cases
+* figure out what info we need and how to build an ontologyo (better name?) relation to relate concepts and classes for traversal in either direction
+* synonymization with max concept distance
+  * e.g., equivalent_to might be distance 0, encodes might be distance 1, etc.
+* figure out what scoring parameters to use, some possibilities are:
+  * confidence we're even referencing the right concepts
+  * confidence in the evidence of a claim (via publications, ontological traversal, etc.)
+    * avoid double-counting same ontological information from multiple sources
+  * confidence via presence in multiple knowledge graphs (RTX2 + sulab semmed)
+  * some notion of relevance: how interesting/useful is this result?
+    * safe drugs are more relevant than unsafe drugs
+
+
+### Graph queries
+
+* Given a query graph
+  * set of nodes
+    * known concepts with CURIEs
+    * unknown concepts, possibly with known category/type
+  * set of edges with known predicate/relation/type
+* Produce a result graph
+  * this is the query graph augmented with instantiations and their metadata
+  * unknown query nodes are bound to (possibly multiple) concepts with CURIEs
+    * contain other information? confidence (the right concept)? relevance?
+  * query edges are bound to (possibly multiple) result edges linking concepts
+    * subject, object
+    * type
+    * negated
+    * `provided_by`
+    * `has_evidence`
+    * publications
+    * `has_confidence_level` (how likely a result is to be true)
+    * `confidence_calculation` ?
+    * relevance (how important a result would be if true; not a biolink property)
+
+* Strategy for producing result graph
+  * synonymization, within and across knowledge graphs
+    * high confidence: `equivalent_to`
+    * low confidence: `xref`
+  * kg-specific base confidence in edges
+  * improving confidence when possible to double-check
+  * reasoning about contradictions (applying negated edges)
+  * determine relevance (e.g., drug is safe (approved or passed phase 1 trial))
+
+
+### UI
+
+* concept distance for (potentially cross-KG) synonyms (similar to ISA checkbox)
+* sorting results by different scoring parameters (confidence vs. relevance)
+* reimplement GUI result builder in terms of run/graph for consistency
+* display JSON version of input/output (need to map different forms of evidence to biolink model)
+* display a simple handmade graph visualization of query and results
+
+
+### Greg will do these
+
+* impose maximum on synonym sets, and gradually reduce allowed connections
+  * after each violation: stop synonym-concepto, then xrefs, then equivalent_to
+* filter for global consistency after propagation
+* improve edge constrainer to pay attention to both subject and object at once
+* separate composite edge construction from ranking
+
+* implement dbKanren
+  * reduce corpus load time
+    * reprocess corpus data using a flat binary format of length-encoded strings
+
+* index edges by predicate
 * index gene aliasing data
 
 * consolidate db generation with one script
 
 * reorganize directory structure
   * lift biolink to main directory, moving current main contents somewhere else
-  * keep configs, logs,  and user programs (such as gui, web-server...) in main directory
+  * keep configs, logs, and user programs (such as gui, web-server...) in main directory
   * move library and data processing code to a new subdirectory
   * move tests and examples into their own subdirectories
-
-* generalize database representation and indexing
-  * choose representation based on field cardinalities
-    * store representation metadata per-database
-  * make it possible to index using arbitrary fields
-    * declaratively specify desired indices
-    * index edges by predicate
-    * index concepts by CUI, including synonyms
-      * robokop: `"equivalent_identifiers"`
-      * orange: `"same_as"`
-      * semmed: `"xrefs"`
-  * allow humans the option of choosing representations
-    * generate summaries and random samples to inform decisions
-
-```
-  (robokop 26 "HGNC:1100" "BRCA1" (0 . "(\"named_thing\" \"gene\")") (("locus_group" . "protein-coding gene") ("chromosome" . "17") ("taxon" . "9606") ("gene_family" . "(\"Ring finger proteins\" \"FA complementation groups\" \"Protein phosphatase 1 regulatory subunits\" \"BRCA1 A complex\" \"BRCA1 B complex\" \"BRCA1 C complex\")") ("location" . "17q21.31") ("id" . "HGNC:1100") ("gene_family_id" . "(58 548 694 1328 1335 1336)") ("equivalent_identifiers" . "(\"UniProtKB:C9IZW4\" \"UniProtKB:E9PC22\" \"UniProtKB:A0A2R8Y7V5\" \"UniProtKB:H0Y8D8\" \"UniProtKB:E9PH68\" \"UniProtKB:K7EPC7\" \"UniProtKB:E7EQW4\" \"UniProtKB:H0Y881\" \"UniProtKB:E7EWN5\" \"UniProtKB:H0Y850\" \"UniProtKB:C6YB45\" \"UniProtKB:E7EUM2\" \"UniProtKB:A0A024R1V0\" \"HGNC:1100\" \"UniProtKB:A0A0U1RRA9\" \"UniProtKB:E7ENB7\" \"UniProtKB:K7EJW3\" \"UniProtKB:H0Y8B8\" \"UniProtKB:A0A2R8Y6Y9\" \"UniProtKB:Q5YLB2\" \"UniProtKB:P38398\" \"UniProtKB:B7ZA85\" \"UniProtKB:A0A0A0MSN1\" \"ENSEMBL:ENSG00000012048\" \"UniProtKB:Q3B891\" \"UniProtKB:G1UI37\" \"NCBIGENE:672\" \"UniProtKB:A0A2R8Y587\")")))
-  (orange 32553 "NCBIGene:672" "BRCA1" (6 . "(\"gene\")") (("iri" . "http://www.ncbi.nlm.nih.gov/gene/672") ("synonym" . "(\"BRCA1/BRCA2-containing complex, subunit 1\" \"Fanconi anemia, complementation group S\" \"protein phosphatase 1, regulatory subunit 53\" \"BRCC1\" \"FANCS\" \"PPP1R53\" \"RNF53\" \"BREAST CANCER 1 GENE; BRCA1\" \"BRCA1\")") ("in_taxon" . "NCBITaxon:9606") ("same_as" . "(\"ENSEMBL:ENSG00000012048\" \"HGNC:1100\" \"OMIM:113705\" \"Orphanet:119068\")") ("provided_by" . "(\"orphanet.ttl\" \"omim.ttl\")") ("description" . "BRCA1, DNA repair associated") ("id" . "NCBIGene:672")))
-
-  (semmed 74686 "UMLS:C0376571" "BRCA1 gene" (4 . "gene") (("umls_type_label" . "['Gene or Genome']") ("xrefs" . "['NCI_NCI-HGNC:HGNC:1100', 'CHV:0000031821', 'PDQ:CDR0000043111', 'MESH:D019398', 'CSP:4005-0006', 'MTH:NOCODE', 'LNC:LP36227-4', 'NCI:C17965', 'LNC:LP19666-4', 'OMIM:113705', 'HGNC:HGNC:1100']") ("id" . "UMLS:C0376571") ("umls_type" . "['T028']") ("labels" . "['gene']")))
-```
 
 * web interface
   * webserver endpoints for lookup of:
     * concepts/predicates (by name or CUI)
     * Xs (by chosen concepts and predicates)
   * web client corresponding to GUI
-
-* try automatic goal reordering based on cardinality statistics
 
 
 ### bottom-up explorer and graph builder ideas
